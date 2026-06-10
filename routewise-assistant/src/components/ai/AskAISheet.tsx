@@ -1,7 +1,24 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bot, Send, X, Sparkles } from "lucide-react";
+import { Bot, Send, X, Sparkles, Loader2 } from "lucide-react";
 import { getDailyInsights, loadHistory } from "@/services/routeHistoryService";
+
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
+
+async function askBackendAI(
+  question: string,
+  context: Record<string, unknown>
+): Promise<string> {
+  const res = await fetch(`${API_BASE}/ai/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, context }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error("Backend AI error");
+  const data = await res.json();
+  return data.answer ?? "I couldn't generate a response.";
+}
 
 // ── Known café brands for fuzzy matching ─────────────────────────────────────
 const KNOWN_CAFES = [
@@ -156,19 +173,35 @@ interface AskAISheetProps {
 export default function AskAISheet({ from, to }: AskAISheetProps) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
-  const [chat, setChat] = useState<{ q: string; a: string }[]>([]);
+  const [chat, setChat] = useState<{ q: string; a: string; loading?: boolean }[]>([]);
+  const [thinking, setThinking] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (open) setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
   }, [chat, open]);
 
-  const ask = (q: string) => {
+  const ask = async (q: string) => {
     const trimmed = q.trim();
-    if (!trimmed) return;
-    const a = getAnswer(trimmed, { from, to });
-    setChat(prev => [...prev, { q: trimmed, a }]);
+    if (!trimmed || thinking) return;
     setInput("");
+    setThinking(true);
+    setChat(prev => [...prev, { q: trimmed, a: "", loading: true }]);
+
+    try {
+      const a = await askBackendAI(trimmed, { from, to });
+      setChat(prev => prev.map((msg, i) =>
+        i === prev.length - 1 ? { q: trimmed, a, loading: false } : msg
+      ));
+    } catch {
+      // Fallback to local keyword matching
+      const a = getAnswer(trimmed, { from, to });
+      setChat(prev => prev.map((msg, i) =>
+        i === prev.length - 1 ? { q: trimmed, a, loading: false } : msg
+      ));
+    } finally {
+      setThinking(false);
+    }
   };
 
   return (
@@ -234,9 +267,19 @@ export default function AskAISheet({ from, to }: AskAISheetProps) {
                     </div>
                     <div className="flex items-start gap-2">
                       <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <Bot className="w-3 h-3 text-white" />
+                        {msg.loading
+                          ? <Loader2 className="w-3 h-3 text-white animate-spin" />
+                          : <Bot className="w-3 h-3 text-white" />
+                        }
                       </div>
-                      <span className="bg-secondary text-foreground text-sm px-3.5 py-2 rounded-2xl rounded-tl-sm max-w-[85%] leading-relaxed">{msg.a}</span>
+                      {msg.loading
+                        ? <span className="bg-secondary text-muted-foreground text-sm px-3.5 py-2 rounded-2xl rounded-tl-sm flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce [animation-delay:0ms]" />
+                            <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce [animation-delay:150ms]" />
+                            <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce [animation-delay:300ms]" />
+                          </span>
+                        : <span className="bg-secondary text-foreground text-sm px-3.5 py-2 rounded-2xl rounded-tl-sm max-w-[85%] leading-relaxed">{msg.a}</span>
+                      }
                     </div>
                   </motion.div>
                 ))}
@@ -246,12 +289,13 @@ export default function AskAISheet({ from, to }: AskAISheetProps) {
               <div className="flex-none flex items-center gap-2 px-4 py-3 border-t border-border">
                 <input value={input} onChange={e => setInput(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && ask(input)}
-                  placeholder="Ask about traffic, cost, safety, cafés…"
-                  className="flex-1 bg-secondary border border-border rounded-xl px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-violet-500/30"
+                  placeholder="Ask anything about your commute…"
+                  disabled={thinking}
+                  className="flex-1 bg-secondary border border-border rounded-xl px-3.5 py-2.5 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-violet-500/30 disabled:opacity-60"
                 />
-                <button onClick={() => ask(input)} disabled={!input.trim()}
+                <button onClick={() => ask(input)} disabled={!input.trim() || thinking}
                   className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center disabled:opacity-40 hover:opacity-90 transition-opacity flex-shrink-0">
-                  <Send className="w-4 h-4 text-white" />
+                  {thinking ? <Loader2 className="w-4 h-4 text-white animate-spin" /> : <Send className="w-4 h-4 text-white" />}
                 </button>
               </div>
             </motion.div>
