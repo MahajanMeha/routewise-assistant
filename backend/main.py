@@ -434,9 +434,6 @@ def _fetch_directions(origin: str, destination: str, mode: str, departure_time: 
     elif mode == TRANSIT_MODE:
         # departure_time helps Google return real scheduled transit options
         params["departure_time"] = departure_time if departure_time != "now" else "now"
-        # Prefer subway/metro + bus; hints Google to surface metro routes when available
-        params["transit_mode"] = "subway|bus"
-        params["transit_routing_preference"] = "fewer_transfers"
 
     response = requests.get(DIRECTIONS_URL, params=params, timeout=15)
     data = response.json()
@@ -511,6 +508,75 @@ def _fetch_directions(origin: str, destination: str, mode: str, departure_time: 
     return routes
 
 
+def _fetch_metro_directions(origin: str, destination: str, departure_time: str = "now") -> list[dict]:
+    """Dedicated subway-only fetch to guarantee metro routes appear when available."""
+    params = {
+        "origin": origin,
+        "destination": destination,
+        "mode": TRANSIT_MODE,
+        "transit_mode": "subway",
+        "alternatives": "true",
+        "key": API_KEY,
+        "departure_time": departure_time if departure_time != "now" else "now",
+    }
+    try:
+        response = requests.get(DIRECTIONS_URL, params=params, timeout=15)
+        data = response.json()
+        if data.get("status") != "OK":
+            return []
+
+        routes: list[dict] = []
+        for route_obj in data.get("routes", [])[:2]:
+            legs = route_obj.get("legs") or []
+            if not legs:
+                continue
+            leg = legs[0]
+            steps = leg.get("steps") or []
+
+            # Only keep routes that actually contain a metro/subway step
+            has_metro = any(
+                _VEHICLE_TYPE_MAP.get(
+                    ((s.get("transit_details") or {}).get("line") or {}).get("vehicle", {}).get("type", "").upper(),
+                    ""
+                ) == "metro"
+                for s in steps if s.get("travel_mode") == "TRANSIT"
+            )
+            if not has_metro:
+                continue
+
+            duration_seconds = (leg.get("duration") or {}).get("value")
+            distance_text = (leg.get("distance") or {}).get("text")
+            distance_m = (leg.get("distance") or {}).get("value", 0)
+            if duration_seconds is None or not distance_text:
+                continue
+
+            duration_minutes = int(duration_seconds // 60)
+            transfers = sum(1 for s in steps if s.get("transit_details"))
+            transfers = max(0, transfers - 1)
+            mode_seq = _extract_mode_sequence(steps, TRANSIT_MODE)
+            cost = _calculate_realistic_cost(distance_m, mode_seq)
+
+            routes.append({
+                "time": duration_minutes,
+                "distance": distance_text,
+                "distance_m": distance_m,
+                "summary": _build_summary(route_obj, leg),
+                "mode_sequence": mode_seq,
+                "transfers": transfers,
+                "traffic_delay": None,
+                "cafes": [],
+                "overview_polyline": route_obj.get("overview_polyline"),
+                "step_segments": _extract_step_segments(steps, TRANSIT_MODE),
+                "detailed_steps": _extract_detailed_steps(steps, TRANSIT_MODE),
+                "coach_advice": _get_coach_advice(mode_seq, origin, destination),
+                "cost": cost,
+            })
+        return routes
+    except Exception as e:
+        print("Metro fetch error:", e)
+        return []
+
+
 def get_real_routes(origin: str, destination: str, departure_time: str = "now", arrival_time: str | None = None):
     try:
         if not origin or not destination:
@@ -519,26 +585,37 @@ def get_real_routes(origin: str, destination: str, departure_time: str = "now", 
             print("Error: Missing GOOGLE_MAPS_API_KEY")
             return []
 
-        # Fetch driving + transit IN PARALLEL — ~2x faster
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        # Fetch driving + general transit + subway-only IN PARALLEL
+        with ThreadPoolExecutor(max_workers=3) as pool:
             driving_fut = pool.submit(_fetch_directions, origin, destination, DRIVING_MODE, departure_time)
             transit_fut = pool.submit(_fetch_directions, origin, destination, TRANSIT_MODE, departure_time)
+            metro_fut   = pool.submit(_fetch_metro_directions, origin, destination, departure_time)
             driving_routes = driving_fut.result(timeout=12)
             transit_routes = transit_fut.result(timeout=12)
+            metro_routes   = metro_fut.result(timeout=12)
 
-        print(f"Driving routes: {len(driving_routes)}, Transit routes: {len(transit_routes)}")
+        print(f"Driving: {len(driving_routes)}, Transit: {len(transit_routes)}, Metro: {len(metro_routes)}")
 
-        # Prefer 1 cab + rest transit if transit available; else all driving
+        # Prefer 1 cab + best metro (if available) + 1 other transit
         combined: list[dict] = []
-        if transit_routes and driving_routes:
-            # Pick the fastest cab route + up to 2 transit routes
-            combined = driving_routes[:1] + transit_routes[:2]
+        cab = driving_routes[:1]
+        metro = metro_routes[:1]
+
+        # Non-metro transit options (bus, auto, etc.)
+        other_transit = [r for r in transit_routes if "metro" not in r.get("mode_sequence", [])]
+
+        if cab and metro and other_transit:
+            combined = cab + metro + other_transit[:1]
+        elif cab and metro:
+            combined = cab + metro
+        elif cab and transit_routes:
+            combined = cab + transit_routes[:2]
         elif transit_routes:
             combined = transit_routes[:3]
         else:
             combined = driving_routes[:3]
 
-        return combined
+        return combined[:3]
     except Exception as e:
         print("Fetch error:", e)
         return []
