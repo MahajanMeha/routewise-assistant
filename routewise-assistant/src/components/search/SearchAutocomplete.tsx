@@ -19,10 +19,17 @@ export default function SearchAutocomplete({ value, onChange, placeholder = "Ent
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const requestSeqRef = useRef(0);
   const cacheRef = useRef(new Map<string, { ts: number; data: PlacePrediction[] }>());
+  const justSelectedRef = useRef(false);
 
   const rawQuery = value.trim();
 
   useEffect(() => {
+    // Skip re-opening dropdown right after the user picked a suggestion
+    if (justSelectedRef.current) {
+      justSelectedRef.current = false;
+      return;
+    }
+
     if (rawQuery.length < 2) {
       setSuggestions([]);
       setOpen(false);
@@ -91,11 +98,13 @@ export default function SearchAutocomplete({ value, onChange, placeholder = "Ent
   }, []);
 
   const selectSuggestion = (description: string, placeId: string) => {
+    justSelectedRef.current = true;   // prevent effect from re-opening dropdown
     onChange(description);
     onPlaceId?.(placeId);
     setOpen(false);
     setSuggestions([]);
     setActiveIndex(-1);
+    inputRef.current?.blur();         // dismiss keyboard on mobile
   };
 
   const highlight = (text: string) => {
