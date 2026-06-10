@@ -264,7 +264,14 @@ def _calculate_realistic_cost(distance_m: int, mode_sequence: list[str]) -> int:
         return metro_slab + 10  # metro + one bus hop
 
     if has_bus and not has_metro:
-        return max(5, min(20, int(5 + km * 1.2)))
+        # Realistic Indian city bus fare slabs (DTC/BMTC/BEST style)
+        if km <= 3:    return 10
+        elif km <= 7:  return 15
+        elif km <= 12: return 20
+        elif km <= 18: return 25
+        elif km <= 25: return 30
+        elif km <= 35: return 35
+        else:          return 40
 
     if has_ferry:
         return max(20, int(km * 6))
@@ -274,6 +281,19 @@ def _calculate_realistic_cost(distance_m: int, mode_sequence: list[str]) -> int:
 
     # auto-rickshaw fallback
     return max(30, int(30 + km * 9))
+
+
+def _estimate_cab_platforms(distance_m: int, duration_minutes: int) -> dict:
+    """Estimate fares across popular Indian cab/auto platforms based on distance + time."""
+    km = max(distance_m / 1000.0, 0.5)
+    t  = max(duration_minutes, 1)
+    return {
+        "uber_go":     max(80,  round(50 + km * 11  + t * 1.5)),
+        "ola_mini":    max(80,  round(49 + km * 10  + t * 1.0)),
+        "rapido_cab":  max(60,  round(35 + km * 9   + t * 0.8)),
+        "rapido_auto": max(40,  round(25 + km * 8)),
+        "ola_auto":    max(40,  round(30 + km * 8   + t * 0.5)),
+    }
 
 
 def _extract_detailed_steps(steps: list[dict], primary_mode: str) -> list[dict]:
@@ -414,6 +434,9 @@ def _fetch_directions(origin: str, destination: str, mode: str, departure_time: 
     elif mode == TRANSIT_MODE:
         # departure_time helps Google return real scheduled transit options
         params["departure_time"] = departure_time if departure_time != "now" else "now"
+        # Prefer subway/metro + bus; hints Google to surface metro routes when available
+        params["transit_mode"] = "subway|bus"
+        params["transit_routing_preference"] = "fewer_transfers"
 
     response = requests.get(DIRECTIONS_URL, params=params, timeout=15)
     data = response.json()
@@ -465,23 +488,25 @@ def _fetch_directions(origin: str, destination: str, mode: str, departure_time: 
         except Exception:
             cafes = []
 
-        routes.append(
-            {
-                "time": duration_minutes,
-                "distance": distance_text,
-                "distance_m": distance_m,
-                "summary": _build_summary(route_obj, leg),
-                "mode_sequence": mode_seq,
-                "transfers": transfers,
-                "traffic_delay": traffic_delay_minutes,
-                "cafes": cafes,
-                "overview_polyline": route_obj.get("overview_polyline"),
-                "step_segments": step_segments,
-                "detailed_steps": detailed_steps,
-                "coach_advice": coach_advice,
-                "cost": cost,
-            }
-        )
+        is_cab_route = (mode_seq == ["cab"])
+        route_dict: dict = {
+            "time": duration_minutes,
+            "distance": distance_text,
+            "distance_m": distance_m,
+            "summary": _build_summary(route_obj, leg),
+            "mode_sequence": mode_seq,
+            "transfers": transfers,
+            "traffic_delay": traffic_delay_minutes,
+            "cafes": cafes,
+            "overview_polyline": route_obj.get("overview_polyline"),
+            "step_segments": step_segments,
+            "detailed_steps": detailed_steps,
+            "coach_advice": coach_advice,
+            "cost": cost,
+        }
+        if is_cab_route:
+            route_dict["cab_platforms"] = _estimate_cab_platforms(distance_m, duration_minutes)
+        routes.append(route_dict)
 
     return routes
 
