@@ -1,211 +1,204 @@
-import { Bus, TrainFront, Car, Users, ArrowRightLeft, Star, TrendingDown, Zap, BadgeDollarSign, AlertTriangle, ShieldCheck, Brain, Footprints, Signal, Coffee } from "lucide-react";
+import { Star, Zap, BadgeDollarSign, ChevronRight, Heart } from "lucide-react";
 import { motion } from "framer-motion";
-import { Route } from "@/types";
+import { useState, useMemo } from "react";
+import { isFavorite, toggleFavorite } from "@/services/routeHistoryService";
+import { computeStressScore, computeArrivalConfidence } from "@/services/aiInsightService";
 
-const modeIcon = (type: string) => {
-  switch (type) {
-    case "bus": return <Bus className="w-3.5 h-3.5" />;
-    case "metro": return <TrainFront className="w-3.5 h-3.5" />;
-    case "auto": return <Car className="w-3.5 h-3.5" />;
-    case "walk": return <Footprints className="w-3.5 h-3.5" />;
-    case "coffee": return <Coffee className="w-3.5 h-3.5" />;
-    default: return <Bus className="w-3.5 h-3.5" />;
+// ── Tag config ────────────────────────────────────────────────────────────────
+
+const TAG_CONFIG: Record<string, { icon: any; label: string; accent: string; accentText: string }> = {
+  best:     { icon: Star,            label: "Best",     accent: "bg-emerald-500/15", accentText: "text-emerald-600 dark:text-emerald-400" },
+  fastest:  { icon: Zap,             label: "Fastest",  accent: "bg-orange-500/15",  accentText: "text-orange-600 dark:text-orange-400" },
+  cheapest: { icon: BadgeDollarSign, label: "Cheapest", accent: "bg-blue-500/15",    accentText: "text-blue-600 dark:text-blue-400" },
+};
+
+// ── Transport mode display ────────────────────────────────────────────────────
+
+const MODE_CONFIG: Record<string, { emoji: string; label: string }> = {
+  metro:   { emoji: "🚇", label: "Metro" },
+  bus:     { emoji: "🚌", label: "Bus" },
+  cab:     { emoji: "🚕", label: "Cab" },
+  auto:    { emoji: "🛺", label: "Auto" },
+  walk:    { emoji: "🚶", label: "Walk" },
+  bike:    { emoji: "🚲", label: "Bike" },
+  tram:    { emoji: "🚊", label: "Tram" },
+  ferry:   { emoji: "⛴️", label: "Ferry" },
+  transit: { emoji: "🚌", label: "Transit" },
+};
+
+function formatModes(modes: string[]): string {
+  if (!modes || modes.length === 0) return "";
+  // Deduplicate to unique modes in order (walk→bus→walk→bus → walk→bus)
+  const unique: string[] = [];
+  for (const m of modes) {
+    if (!unique.includes(m)) unique.push(m);
   }
-};
-
-const crowdColor = (level: string) => {
-  switch (level) {
-    case "Low": return "text-route-green";
-    case "Medium": return "text-route-yellow";
-    case "High": return "text-route-red";
-    default: return "text-muted-foreground";
-  }
-};
-
-const reliabilityLabel = (score: number) => {
-  if (score >= 90) return { label: "Highly Reliable", color: "text-route-green" };
-  if (score >= 75) return { label: "Moderate", color: "text-route-yellow" };
-  return { label: "Risky", color: "text-route-red" };
-};
-
-const stressConfig = {
-  Low: { color: "text-route-green" },
-  Medium: { color: "text-route-yellow" },
-  High: { color: "text-route-red" },
-};
-
-const tagConfig: Record<string, { icon: any, label: string, className: string }> = {
-  best: { icon: Star, label: "Best Option", className: "bg-route-green/20 text-route-green" },
-  cheapest: { icon: BadgeDollarSign, label: "Cheapest", className: "bg-route-blue/20 text-route-blue" },
-  fastest: { icon: Zap, label: "Fastest", className: "bg-route-orange/20 text-route-orange" },
-  alternative: { icon: ArrowRightLeft, label: "Alternative", className: "bg-secondary text-muted-foreground" },
-};
-
-interface RouteCardProps {
-  route: Route;
-  index: number;
-  onClick: () => void;
+  return unique
+    .map((m) => {
+      const cfg = MODE_CONFIG[m] ?? { emoji: "🚌", label: m };
+      return `${cfg.emoji} ${cfg.label}`;
+    })
+    .join("  →  ");
 }
 
-const RouteCard = ({ route, index, onClick }: RouteCardProps) => {
+// Fallback: infer rough mode from summary text when mode_sequence is absent
+function inferModesFromSummary(summary: string): string {
+  const s = summary.toLowerCase();
+  if (s.includes("metro") || s.includes("subway")) return "🚇 Metro";
+  if (s.includes("bus") || s.includes("bmtc")) return "🚌 Bus";
+  if (s.includes("cab") || s.includes("auto")) return "🚕 Cab";
+  if (s.includes("bike") || s.includes("cycle")) return "🚲 Bike";
+  return "🚕 Drive";
+}
+
+// ── Crowd dot ─────────────────────────────────────────────────────────────────
+
+const CROWD_DOT: Record<string, string> = {
+  low:    "bg-emerald-500",
+  medium: "bg-amber-400",
+  high:   "bg-red-500",
+};
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+interface RouteCardProps {
+  route: {
+    time: number;
+    distance: string;
+    summary: string;
+    mode_sequence?: string[];
+    transfers: number;
+    cost: number;
+    tag: "best" | "fastest" | "cheapest" | "alternative";
+    recommendation_reason: string;
+    tradeoff?: string;
+    crowd: string;
+    reliability: number;
+    break_stop: string | null;
+    traffic_delay?: number | null;
+    cafes?: { name: string; rating?: number | null; address?: string | null }[];
+  };
+  index: number;
+  onClick: () => void;
+  from?: string;
+  to?: string;
+  fromPlaceId?: string;
+  toPlaceId?: string;
+}
+
+const RouteCard = ({ route, index, onClick, from = "", to = "", fromPlaceId = "", toPlaceId = "" }: RouteCardProps) => {
   const isBest = route.tag === "best";
-  const tag = route.tag ? tagConfig[route.tag] : null;
-  const rel = reliabilityLabel(route.reliability);
-  const stress = stressConfig[route.stressLevel];
+  const tag = TAG_CONFIG[route.tag];
+  const [fav, setFav] = useState(() => isFavorite(from, to));
+  const stress = useMemo(() => computeStressScore(route), [route]);
+  const confidence = useMemo(() => computeArrivalConfidence(route), [route]);
+
+  const modeText = route.mode_sequence?.length
+    ? formatModes(route.mode_sequence)
+    : inferModesFromSummary(route.summary);
+
+  // Secondary pills: transfers + crowd + break stop
+  const pills: string[] = [];
+  if (route.transfers === 0) pills.push("Direct");
+  else pills.push(`${route.transfers} stop${route.transfers > 1 ? "s" : ""}`);
+  if (route.break_stop) {
+    pills.push(route.break_stop.toLowerCase().includes("coffee") ? "☕ Coffee" : "🚻 Washroom");
+  }
 
   return (
     <motion.button
-      initial={{ y: 20, opacity: 0 }}
+      type="button"
+      initial={{ y: 12, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
-      transition={{ delay: index * 0.08 }}
+      transition={{ delay: index * 0.06 }}
       onClick={onClick}
-      className={`w-full text-left rounded-2xl p-4 transition-all active:scale-[0.98] ${
+      className={`w-full text-left rounded-2xl px-4 py-3.5 transition-all active:scale-[0.985] ${
         isBest
           ? "gradient-card-highlight text-primary-foreground shadow-elevated"
           : "bg-card border border-border shadow-card hover:shadow-elevated hover:border-primary/20"
       }`}
     >
-      {/* Tag */}
-      {tag && (
-        <div className="flex items-center gap-1.5 mb-2">
-          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
-            isBest ? "bg-primary-foreground/20 text-primary-foreground" : tag.className
+      {/* Row 1: Time · Cost · Tag badge · Arrow */}
+      <div className="flex items-center gap-2.5 mb-2">
+        <div className="flex items-baseline gap-0.5">
+          <span className="text-2xl font-extrabold leading-none tabular-nums">{route.time}</span>
+          <span className={`text-xs font-medium ml-0.5 ${isBest ? "text-primary-foreground/60" : "text-muted-foreground"}`}>min</span>
+        </div>
+
+        <span className={`font-bold ${isBest ? "text-primary-foreground/40" : "text-muted-foreground/30"}`}>·</span>
+
+        <span className="text-base font-bold tabular-nums">₹{route.cost}</span>
+
+        {tag && (
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${
+            isBest
+              ? "bg-primary-foreground/20 text-primary-foreground"
+              : `${tag.accent} ${tag.accentText}`
           }`}>
-            <tag.icon className="w-3 h-3" />
+            <tag.icon className="w-2.5 h-2.5" />
             {tag.label}
           </span>
-        </div>
-      )}
+        )}
 
-      {/* Delay Alert */}
-      {route.delayAlert && (
-        <div className={`flex items-center gap-1.5 mb-2 text-[10px] font-semibold rounded-lg px-2.5 py-1.5 ${
-          isBest ? "bg-route-yellow/20 text-route-yellow" : "bg-route-yellow/10 text-route-yellow"
-        }`}>
-          <AlertTriangle className="w-3 h-3 flex-shrink-0" />
-          {route.delayAlert}
-        </div>
-      )}
+        {/* Favourite heart */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            const added = toggleFavorite({ from, to, fromPlaceId, toPlaceId });
+            setFav(added);
+          }}
+          className="ml-auto mr-1 flex-shrink-0 p-1"
+          aria-label="Favourite"
+        >
+          <Heart className={`w-4 h-4 transition-all ${fav ? "fill-red-500 text-red-500 scale-110" : isBest ? "text-primary-foreground/40" : "text-muted-foreground/30"}`} />
+        </button>
 
-      {/* Time + modes */}
-      <div className="flex items-start justify-between mb-2">
-        <div>
-          <p className={`text-[10px] uppercase tracking-wider font-medium ${isBest ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
-            Travel time {route.breakStop ? "(incl. break)" : ""}
-          </p>
-          <p className="text-3xl font-extrabold leading-tight">{route.totalTime}</p>
-          {route.breakStop && (
-            <p className={`text-[10px] mt-0.5 ${isBest ? "text-primary-foreground/50" : "text-muted-foreground"}`}>
-              Route: {route.time} + {route.breakStop.duration} break
-            </p>
-          )}
-        </div>
-        <div className="flex gap-1.5 flex-wrap justify-end max-w-[50%]">
-          {route.modes.map((mode, j) => (
-            <span
-              key={j}
-              className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-bold ${
-                isBest
-                  ? "bg-primary-foreground/20 text-primary-foreground"
-                  : `${mode.color} text-primary-foreground`
-              }`}
-            >
-              {modeIcon(mode.type)}
-              {mode.label}
-            </span>
-          ))}
-        </div>
+        <ChevronRight className={`w-4 h-4 flex-shrink-0 ${isBest ? "text-primary-foreground/40" : "text-muted-foreground/40"}`} />
       </div>
 
-      {/* Break badge from backend */}
-      {route.break_stop && (
-        <div className={`flex items-center gap-1.5 mb-2 text-[10px] font-semibold rounded-lg px-2.5 py-1.5 ${
-          isBest ? "bg-primary-foreground/10 text-primary-foreground/80" : "bg-accent text-accent-foreground"
-        }`}>
-          {route.break_stop.toLowerCase().includes("coffee") ? "☕" : "🚻"} {route.break_stop}
-        </div>
-      )}
+      {/* Row 2: Transport modes */}
+      <div className={`text-sm font-semibold mb-1.5 ${isBest ? "text-primary-foreground/95" : "text-foreground"}`}>
+        {modeText}
+      </div>
 
-      {/* Break badge (old static) */}
-      {route.breakStop && !route.break_stop && (
-        <div className={`flex items-center gap-1.5 mb-2 text-[10px] font-semibold rounded-lg px-2.5 py-1.5 ${
-          isBest ? "bg-primary-foreground/10 text-primary-foreground/80" : "bg-accent text-accent-foreground"
-        }`}>
-          <Coffee className="w-3 h-3 flex-shrink-0" />
-          {route.breakStop.name} · {route.breakStop.duration}
-        </div>
-      )}
-
-      <p className={`text-xs mb-3 ${isBest ? "text-primary-foreground/60" : "text-muted-foreground"}`}>
-        Leave by: <span className="font-bold">{route.leaveBy}</span>
-      </p>
-
-      {/* Stats */}
-      <div className={`flex items-center gap-3 text-xs flex-wrap ${isBest ? "text-primary-foreground/80" : "text-muted-foreground"}`}>
-        <span className={`flex items-center gap-1 ${isBest ? "" : rel.color}`}>
-          <ShieldCheck className="w-3 h-3" /> {route.reliability}%
-        </span>
-        <span className={`flex items-center gap-1 ${isBest ? "" : crowdColor(route.crowd)}`}>
-          <Users className="w-3 h-3" /> {route.crowd}
-        </span>
+      {/* Row 3: Crowd + pills + traffic */}
+      <div className={`flex items-center gap-2 text-xs flex-wrap ${isBest ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
         <span className="flex items-center gap-1">
-          <ArrowRightLeft className="w-3 h-3" /> {route.transfers}
+          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${CROWD_DOT[route.crowd] ?? "bg-muted-foreground"}`} />
+          <span className="capitalize">{route.crowd} crowd</span>
         </span>
-        <span className={`flex items-center gap-1 ${isBest ? "" : stress.color}`}>
-          <Brain className="w-3 h-3" /> {route.stressLevel}
-        </span>
+        {pills.map((p) => (
+          <span key={p} className="flex items-center gap-1"><span>·</span><span>{p}</span></span>
+        ))}
+        {typeof route.traffic_delay === "number" && route.traffic_delay > 0 && (
+          <span className="flex items-center gap-1 text-amber-500 font-semibold">
+            <span>·</span>
+            <span>🚦 +{route.traffic_delay}m delay</span>
+          </span>
+        )}
       </div>
 
-      {/* Auto availability intelligence */}
-      {(route.auto_availability !== undefined || route.autoAvailability) && (
-        <div className={`mt-2.5 space-y-1 ${isBest ? "text-primary-foreground/80" : ""}`}>
-          <div className={`flex items-center gap-1.5 text-xs font-medium ${
-            isBest ? "" : (
-              (route.auto_availability ?? route.autoAvailability?.percent ?? 0) >= 70 ? "text-route-green" :
-              (route.auto_availability ?? route.autoAvailability?.percent ?? 0) >= 40 ? "text-route-yellow" : "text-route-red"
-            )
-          }`}>
-            <Signal className="w-3 h-3" />
-            Auto availability: {route.auto_availability ?? route.autoAvailability?.percent}%
-          </div>
-          {(route.availability_warning || route.autoAvailability?.level) && (
-            <div className={`flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-tight ${
-              isBest ? "text-primary-foreground/60" : (
-                (route.auto_availability ?? route.autoAvailability?.percent ?? 0) >= 70 ? "text-route-green/80" :
-                (route.auto_availability ?? route.autoAvailability?.percent ?? 0) >= 40 ? "text-route-yellow/80" : "text-route-red/80"
-              )
-            }`}>
-              <AlertTriangle className="w-2.5 h-2.5" />
-              {route.availability_warning ?? (route.autoAvailability?.level === "High" ? "High availability" : route.autoAvailability?.level === "Medium" ? "Moderate availability" : "Low chance of getting auto")}
-            </div>
-          )}
+      {/* Row 4: Recommendation reason */}
+      {route.recommendation_reason && (
+        <div className={`mt-1 text-[11px] font-medium leading-snug ${isBest ? "text-primary-foreground/60" : "text-muted-foreground/70"}`}>
+          {route.recommendation_reason}
         </div>
       )}
 
-      {/* Explainable AI */}
-      <div className={`border-t mt-3 pt-3 ${isBest ? "border-primary-foreground/20" : "border-border"}`}>
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex-1 min-w-0">
-            <p className={`text-[10px] uppercase tracking-wider font-semibold mb-0.5 ${isBest ? "text-primary-foreground/50" : "text-muted-foreground/70"}`}>
-              Why this route?
-            </p>
-            <p className={`text-xs ${isBest ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
-              {route.explanation}
-            </p>
-          </div>
-          <span className="text-lg font-extrabold flex-shrink-0">{route.cost}</span>
-        </div>
+      {/* Row 5: Stress + confidence — subtle */}
+      <div className={`flex items-center gap-3 mt-2 pt-2 border-t ${isBest ? "border-primary-foreground/15" : "border-border"}`}>
+        <span className={`text-[10px] font-semibold ${isBest ? "text-primary-foreground/60" : "text-muted-foreground/70"}`}>
+          Stress&nbsp;
+          <span className={isBest ? "text-primary-foreground/90" : stress.color}>{stress.score}/10</span>
+        </span>
+        <span className={isBest ? "text-primary-foreground/30" : "text-muted-foreground/30"}>·</span>
+        <span className={`text-[10px] font-semibold ${isBest ? "text-primary-foreground/60" : "text-muted-foreground/70"}`}>
+          <span className={isBest ? "text-primary-foreground/90" : confidence.confidence >= 80 ? "text-emerald-500" : confidence.confidence >= 65 ? "text-amber-500" : "text-red-500"}>
+            {confidence.confidence}%
+          </span>
+          &nbsp;on-time
+        </span>
       </div>
-
-      {/* Tradeoff info from backend */}
-      {route.tradeoff && (
-        <div className={`mt-2 flex items-center gap-1.5 text-xs rounded-lg px-2.5 py-1.5 ${
-          isBest ? "bg-primary-foreground/10 text-primary-foreground/80" : "bg-secondary text-muted-foreground"
-        }`}>
-          <TrendingDown className="w-3 h-3 flex-shrink-0" />
-          {route.tradeoff}
-        </div>
-      )}
     </motion.button>
   );
 };
