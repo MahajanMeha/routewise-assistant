@@ -61,6 +61,16 @@ const CROWD_DOT: Record<string, string> = {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+// ── Cab platform config ───────────────────────────────────────────────────────
+
+const PLATFORM_CONFIG: Record<string, { label: string; color: string }> = {
+  uber_go:     { label: "Uber Go",   color: "bg-black/10 dark:bg-white/10 text-foreground" },
+  ola_mini:    { label: "Ola Mini",  color: "bg-green-500/10 text-green-700 dark:text-green-400" },
+  rapido_cab:  { label: "Rapido",    color: "bg-yellow-500/10 text-yellow-700 dark:text-yellow-400" },
+  rapido_auto: { label: "Rapido Auto", color: "bg-yellow-500/10 text-yellow-700 dark:text-yellow-400" },
+  ola_auto:    { label: "Ola Auto",  color: "bg-green-500/10 text-green-700 dark:text-green-400" },
+};
+
 interface RouteCardProps {
   route: {
     time: number;
@@ -77,6 +87,7 @@ interface RouteCardProps {
     break_stop: string | null;
     traffic_delay?: number | null;
     cafes?: { name: string; rating?: number | null; address?: string | null }[];
+    cab_platforms?: Record<string, number>;
   };
   index: number;
   onClick: () => void;
@@ -185,7 +196,37 @@ const RouteCard = ({ route, index, onClick, from = "", to = "", fromPlaceId = ""
         </div>
       )}
 
-      {/* Row 5: Stress + confidence — subtle */}
+      {/* Row 5: Cab platform prices */}
+      {route.cab_platforms && Object.keys(route.cab_platforms).length > 0 && (() => {
+        const entries = Object.entries(route.cab_platforms);
+        const minPrice = Math.min(...entries.map(([, p]) => p));
+        return (
+          <div className={`mt-2 pt-2 border-t ${isBest ? "border-primary-foreground/15" : "border-border"}`}>
+            <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1.5 ${isBest ? "text-primary-foreground/50" : "text-muted-foreground/60"}`}>
+              Compare apps
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {entries.map(([key, price]) => {
+                const cfg = PLATFORM_CONFIG[key] ?? { label: key, color: "bg-secondary text-foreground" };
+                const isCheapest = price === minPrice;
+                return (
+                  <span
+                    key={key}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                      isBest ? "bg-primary-foreground/15 text-primary-foreground" : cfg.color
+                    } ${isCheapest ? "ring-1 ring-emerald-500/50" : ""}`}
+                  >
+                    {isCheapest && <span className="text-emerald-500">✓</span>}
+                    {cfg.label} ₹{price}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Row 6: Stress + confidence — subtle */}
       <div className={`flex items-center gap-3 mt-2 pt-2 border-t ${isBest ? "border-primary-foreground/15" : "border-border"}`}>
         <span className={`text-[10px] font-semibold ${isBest ? "text-primary-foreground/60" : "text-muted-foreground/70"}`}>
           Stress&nbsp;
