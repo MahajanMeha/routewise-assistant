@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import re
@@ -30,7 +30,9 @@ AUTO_AVAILABILITY_MIN = 40
 AUTO_AVAILABILITY_MAX = 90
 
 load_dotenv()
-API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+API_KEY      = os.getenv("GOOGLE_MAPS_API_KEY")
+GEMINI_KEY   = os.getenv("GEMINI_API_KEY")
+GEMINI_URL   = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 
 # CORS: allow all in dev; lock to your domain in prod by setting ALLOWED_ORIGINS env var
 # e.g.  ALLOWED_ORIGINS=https://commuteai.vercel.app,https://www.commuteai.app
@@ -808,6 +810,81 @@ def enrich_routes(routes: list[dict], break_type: str, source: str) -> list[dict
         route["tradeoff"] = "" if i == best_idx else build_tradeoff(best, route)
 
     return routes
+
+def _ask_gemini(question: str, context_str: str) -> str | None:
+    """Call Gemini 1.5 Flash with route context. Returns None on failure."""
+    if not GEMINI_KEY:
+        return None
+    prompt = f"""You are CommuteAI, a smart commute assistant for Indian cities.
+Answer the user's question in 2–3 sentences max. Be practical and specific.
+Use ₹ for prices. Mention Indian apps/services where relevant (Ola, Uber, Rapido, DMRC, BMTC, BEST, Namma Metro, etc.).
+Never invent real-time data you don't have. If asked about specific live traffic/weather say you don't have live data.
+
+Route context: {context_str}
+
+User question: {question}
+
+Answer:"""
+    try:
+        resp = requests.post(
+            f"{GEMINI_URL}?key={GEMINI_KEY}",
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": 200, "temperature": 0.7},
+                "safetySettings": [
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH",  "threshold": "BLOCK_NONE"},
+                ],
+            },
+            timeout=12,
+        )
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print("Gemini error:", e)
+        return None
+
+
+@app.post("/ai/chat")
+async def ai_chat(request: Request):
+    body = await request.json()
+    question = (body.get("question") or "").strip()
+    ctx      = body.get("context") or {}
+
+    if not question:
+        return {"answer": "Ask me anything about your commute!"}
+
+    # Build a readable context string for the prompt
+    hour = datetime.now().hour
+    time_label = (
+        "morning peak (8–10 AM)" if 8  <= hour <= 10 else
+        "evening peak (5–8 PM)"  if 17 <= hour <= 20 else
+        "off-peak hours"
+    )
+    parts: list[str] = [f"current time {datetime.now().strftime('%H:%M')} ({time_label})"]
+    if ctx.get("from") and ctx.get("to"):
+        parts.append(f"commuting from {ctx['from']} to {ctx['to']}")
+    if ctx.get("routeTime"):
+        parts.append(f"selected route takes {ctx['routeTime']} min")
+    if ctx.get("routeCost"):
+        parts.append(f"estimated cost ₹{ctx['routeCost']}")
+    if ctx.get("routeModes"):
+        parts.append(f"transport modes: {', '.join(ctx['routeModes'])}")
+    if ctx.get("routeCrowd"):
+        parts.append(f"crowd level: {ctx['routeCrowd']}")
+    if ctx.get("routeCafes"):
+        cafe_names = [c["name"] for c in ctx["routeCafes"][:3]]
+        if cafe_names:
+            parts.append(f"cafes on route: {', '.join(cafe_names)}")
+
+    context_str = "; ".join(parts)
+
+    answer = _ask_gemini(question, context_str)
+    if not answer:
+        answer = "AI is temporarily unavailable — please try again in a moment."
+
+    return {"answer": answer}
+
 
 @app.get("/")
 def home():
