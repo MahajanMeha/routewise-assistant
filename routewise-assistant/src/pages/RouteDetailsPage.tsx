@@ -344,17 +344,12 @@ const RouteDetailsPage = ({ origin, destination, route, onBack, originPlaceId, d
         </motion.div>
 
         {/* ── Cab platform price comparison ── */}
-        {route?.cab_platforms && Object.keys(route.cab_platforms).length > 0 && (() => {
-          const platformLabels: Record<string, { label: string; emoji: string }> = {
-            uber_go:     { label: "Uber Go",     emoji: "⚫" },
-            ola_mini:    { label: "Ola Mini",    emoji: "🟢" },
-            rapido_cab:  { label: "Rapido Cab",  emoji: "🟡" },
-            rapido_auto: { label: "Rapido Auto", emoji: "🟡" },
-            ola_auto:    { label: "Ola Auto",    emoji: "🟢" },
-          };
-          const entries = Object.entries(route.cab_platforms as Record<string, number>);
-          const minPrice = Math.min(...entries.map(([, p]) => p));
-          const maxPrice = Math.max(...entries.map(([, p]) => p));
+        {route?.cab_platforms && route.cab_platforms.length > 0 && (() => {
+          type CabPlatform = { platform: string; label: string; emoji: string; low: number; high: number; deep_link: string };
+          const platforms: CabPlatform[] = route.cab_platforms;
+          const sorted = [...platforms].sort((a, b) => a.low - b.low);
+          const minLow = sorted[0]?.low ?? 0;
+          const maxHigh = Math.max(...platforms.map(p => p.high));
           return (
             <motion.div
               initial={{ opacity: 0, y: 12 }}
@@ -362,35 +357,45 @@ const RouteDetailsPage = ({ origin, destination, route, onBack, originPlaceId, d
               transition={{ delay: 0.16 }}
               className="bg-card border border-border rounded-2xl p-4"
             >
-              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-3">Compare cab apps</p>
-              <div className="space-y-2">
-                {entries.sort(([, a], [, b]) => a - b).map(([key, price]) => {
-                  const cfg = platformLabels[key] ?? { label: key, emoji: "🚕" };
-                  const isCheapest = price === minPrice;
-                  const barWidth = maxPrice > minPrice
-                    ? Math.round(30 + ((price - minPrice) / (maxPrice - minPrice)) * 70)
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Compare cab apps</p>
+                <span className="text-[9px] text-muted-foreground/60 italic">estimated · tap to open</span>
+              </div>
+              <div className="space-y-2.5">
+                {sorted.map(p => {
+                  const isCheapest = p.low === minLow;
+                  const barWidth = maxHigh > 0
+                    ? Math.round(30 + (p.high / maxHigh) * 70)
                     : 100;
                   return (
-                    <div key={key} className="flex items-center gap-3">
-                      <span className="text-sm w-24 font-semibold text-foreground flex-shrink-0 flex items-center gap-1">
-                        <span className="text-xs">{cfg.emoji}</span>
-                        {cfg.label}
+                    <a
+                      key={p.platform}
+                      href={p.deep_link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-3 group"
+                    >
+                      <span className="text-sm w-24 font-semibold text-foreground flex-shrink-0 flex items-center gap-1 group-hover:text-primary transition-colors">
+                        <span className="text-xs">{p.emoji}</span>
+                        {p.label}
                       </span>
                       <div className="flex-1 h-2 bg-secondary rounded-full overflow-hidden">
                         <div
-                          className={`h-full rounded-full transition-all ${isCheapest ? "bg-emerald-500" : "bg-primary/40"}`}
+                          className={`h-full rounded-full ${isCheapest ? "bg-emerald-500" : "bg-primary/40"}`}
                           style={{ width: `${barWidth}%` }}
                         />
                       </div>
-                      <span className={`text-sm font-bold tabular-nums flex-shrink-0 ${isCheapest ? "text-emerald-600 dark:text-emerald-400" : "text-foreground"}`}>
-                        ₹{price}
-                        {isCheapest && <span className="text-[9px] ml-1 font-semibold">cheapest</span>}
+                      <span className={`text-sm font-bold tabular-nums flex-shrink-0 w-20 text-right ${isCheapest ? "text-emerald-600 dark:text-emerald-400" : "text-foreground"}`}>
+                        ₹{p.low}–{p.high}
+                        {isCheapest && <span className="text-[9px] ml-1">✓</span>}
                       </span>
-                    </div>
+                    </a>
                   );
                 })}
               </div>
-              <p className="text-[10px] text-muted-foreground mt-3">Estimates based on base fare + distance + time. Actual prices may vary with surge.</p>
+              <p className="text-[9px] text-muted-foreground/60 mt-3 leading-relaxed">
+                ⚠️ Rough estimates only — actual fares depend on your city, surge, and route. Tap any row to check real price in the app.
+              </p>
             </motion.div>
           );
         })()}

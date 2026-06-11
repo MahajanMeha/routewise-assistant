@@ -285,17 +285,58 @@ def _calculate_realistic_cost(distance_m: int, mode_sequence: list[str]) -> int:
     return max(30, int(30 + km * 9))
 
 
-def _estimate_cab_platforms(distance_m: int, duration_minutes: int) -> dict:
-    """Estimate fares across popular Indian cab/auto platforms based on distance + time."""
+def _estimate_cab_platforms(distance_m: int, duration_minutes: int) -> list[dict]:
+    """
+    Rough fare ranges for Indian cab/auto platforms.
+    Prices vary by city, time of day, and surge — these are ballpark estimates only.
+    Formula: base + (km * per_km_rate) ± 20% range.
+    """
     km = max(distance_m / 1000.0, 0.5)
     t  = max(duration_minutes, 1)
-    return {
-        "uber_go":     max(80,  round(50 + km * 11  + t * 1.5)),
-        "ola_mini":    max(80,  round(49 + km * 10  + t * 1.0)),
-        "rapido_cab":  max(60,  round(35 + km * 9   + t * 0.8)),
-        "rapido_auto": max(40,  round(25 + km * 8)),
-        "ola_auto":    max(40,  round(30 + km * 8   + t * 0.5)),
-    }
+
+    def _range(base: float, per_km: float, per_min: float, minimum: int) -> dict[str, int]:
+        mid = base + km * per_km + t * per_min
+        low = max(minimum, round(mid * 0.85 / 5) * 5)   # round to nearest ₹5
+        high = max(minimum, round(mid * 1.20 / 5) * 5)
+        return {"low": low, "high": high}
+
+    return [
+        {
+            "platform": "uber_go",
+            "label": "Uber Go",
+            "emoji": "⚫",
+            **_range(base=65, per_km=12, per_min=1.5, minimum=100),
+            "deep_link": "https://m.uber.com/ul/",
+        },
+        {
+            "platform": "ola_mini",
+            "label": "Ola Mini",
+            "emoji": "🟢",
+            **_range(base=60, per_km=11, per_min=1.0, minimum=100),
+            "deep_link": "https://book.olacabs.com/",
+        },
+        {
+            "platform": "rapido_cab",
+            "label": "Rapido Cab",
+            "emoji": "🟡",
+            **_range(base=45, per_km=10, per_min=0.8, minimum=80),
+            "deep_link": "https://rapido.bike/",
+        },
+        {
+            "platform": "rapido_auto",
+            "label": "Rapido Auto",
+            "emoji": "🟡",
+            **_range(base=30, per_km=8, per_min=0.5, minimum=50),
+            "deep_link": "https://rapido.bike/",
+        },
+        {
+            "platform": "ola_auto",
+            "label": "Ola Auto",
+            "emoji": "🟢",
+            **_range(base=30, per_km=9, per_min=0.5, minimum=50),
+            "deep_link": "https://book.olacabs.com/",
+        },
+    ]
 
 
 def _extract_detailed_steps(steps: list[dict], primary_mode: str) -> list[dict]:

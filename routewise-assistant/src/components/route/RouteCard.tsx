@@ -87,7 +87,7 @@ interface RouteCardProps {
     break_stop: string | null;
     traffic_delay?: number | null;
     cafes?: { name: string; rating?: number | null; address?: string | null }[];
-    cab_platforms?: Record<string, number>;
+    cab_platforms?: { platform: string; label: string; emoji: string; low: number; high: number; deep_link: string }[];
   };
   index: number;
   onClick: () => void;
@@ -196,31 +196,30 @@ const RouteCard = ({ route, index, onClick, from = "", to = "", fromPlaceId = ""
         </div>
       )}
 
-      {/* Row 5: Cab platform prices */}
-      {route.cab_platforms && Object.keys(route.cab_platforms).length > 0 && (() => {
-        const entries = Object.entries(route.cab_platforms);
-        const minPrice = Math.min(...entries.map(([, p]) => p));
+      {/* Row 5: Cab platform price estimates */}
+      {route.cab_platforms && route.cab_platforms.length > 0 && (() => {
+        const minLow = Math.min(...route.cab_platforms.map(p => p.low));
         return (
           <div className={`mt-2 pt-2 border-t ${isBest ? "border-primary-foreground/15" : "border-border"}`}>
             <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1.5 ${isBest ? "text-primary-foreground/50" : "text-muted-foreground/60"}`}>
-              Compare apps
+              Estimated fares · tap to open app
             </p>
             <div className="flex flex-wrap gap-1.5">
-              {entries.map(([key, price]) => {
-                const cfg = PLATFORM_CONFIG[key] ?? { label: key, color: "bg-secondary text-foreground" };
-                const isCheapest = price === minPrice;
-                return (
-                  <span
-                    key={key}
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                      isBest ? "bg-primary-foreground/15 text-primary-foreground" : cfg.color
-                    } ${isCheapest ? "ring-1 ring-emerald-500/50" : ""}`}
-                  >
-                    {isCheapest && <span className="text-emerald-500">✓</span>}
-                    {cfg.label} ₹{price}
-                  </span>
-                );
-              })}
+              {route.cab_platforms.map(p => (
+                <a
+                  key={p.platform}
+                  href={p.deep_link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={e => e.stopPropagation()}
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                    isBest ? "bg-primary-foreground/15 text-primary-foreground" : "bg-secondary text-foreground"
+                  } ${p.low === minLow ? "ring-1 ring-emerald-500/50" : ""}`}
+                >
+                  {p.low === minLow && <span className="text-emerald-500">✓</span>}
+                  {p.emoji} {p.label} ₹{p.low}–{p.high}
+                </a>
+              ))}
             </div>
           </div>
         );
